@@ -1,0 +1,38 @@
+BalanceViolation 0.000000
+AffinityLoss 0.000000
+Compactness 5877.297958
+District 1
+Nodes: 3 10 16 17 23 26 30 31 33 51 58 71 73 79
+Compactness: 967.864131
+Weights: 8859.000000 28772.000000 28709.000000
+Center Node: 17
+
+District 2
+Nodes: 1 5 12 19 27 38 41 42 55 65 72 75 78
+Compactness: 1094.773316
+Weights: 8386.000000 27101.000000 27098.000000
+Center Node: 19
+
+District 3
+Nodes: 0 2 8 11 14 18 28 36 43 46 56 61 66 77
+Compactness: 917.007500
+Weights: 8827.000000 28421.000000 28587.000000
+Center Node: 77
+
+District 4
+Nodes: 9 15 34 39 45 48 50 52 53 54 63 64 68
+Compactness: 1035.302255
+Weights: 8392.000000 27434.000000 27027.000000
+Center Node: 34
+
+District 5
+Nodes: 7 13 21 22 25 40 47 49 57 59 69 70 74
+Compactness: 886.672434
+Weights: 8183.000000 26976.000000 26790.000000
+Center Node: 59
+
+District 6
+Nodes: 4 6 20 24 29 32 35 37 44 60 62 67 76
+Compactness: 975.678321
+Weights: 8503.000000 27751.000000 27066.000000
+Center Node: 29
