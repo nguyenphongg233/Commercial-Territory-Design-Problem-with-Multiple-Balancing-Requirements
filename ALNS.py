@@ -22,8 +22,6 @@ This implementation:
 - Adds a repair operator implementing 2-regret (assign nodes by maximizing the
   difference between best insertion cost and second-best insertion cost).
 
-Usage: python alns_territory_design.py input.txt output.txt
-
 """
 
 import sys
@@ -68,11 +66,7 @@ def read_instance(path):
         m2 = int(next(it))
     except StopIteration:
         raise ValueError('Input ended unexpectedly when reading m')
-    if m1 != m2:
-        # accept m1 as m, but warn
-        m = m1
-    else:
-        m = m1
+    m = m1
     tau = [float(next(it)), float(next(it)), float(next(it))]
     _z = float(next(it))
     # read m lines each with n affinity values (1/2/3)
@@ -89,12 +83,8 @@ def read_instance(path):
         'f': f
     }
 
-
 def euclidean(a, b):
     return math.hypot(a['x']-b['x'], a['y']-b['y'])
-
-# compute pairwise distances matrix on demand (could be heavy for big n)
-
 def compute_dist_matrix(nodes):
     n = len(nodes)
     d = [[0.0]*n for _ in range(n)]
@@ -111,7 +101,7 @@ def compute_dist_matrix(nodes):
 
 def is_connected_set(node_set, adj):
     if not node_set:
-        return False
+        return True
     start = next(iter(node_set))
     seen = set([start])
     q = deque([start])
@@ -185,7 +175,7 @@ def lex_better(sol1, sol2):
 
 # aggregated score for SA acceptance (weighted sum) - weights chosen to reflect priorities
 
-def aggregated_score(objs, weights=(1e6, 1e3, 1.0)):
+def aggregated_score(objs, weights=(1e10, 1e5, 1.0)):
     # weights large for balance_violation to emulate lexicographic priority
     return weights[0]*objs[0] + weights[1]*objs[1] + weights[2]*objs[2]
 
@@ -242,6 +232,7 @@ def initial_solution_seeded_growth(instance, dmat, time_limit=None):
         for v in adj[seeds[j]]:
             if v not in assigned:
                 frontier[j].add(v)
+    
     while len(assigned) < n:
         # pick district with non-empty frontier, choose best candidate by distance to center
         changed = False
@@ -314,6 +305,11 @@ def initial_solution_seeded_growth(instance, dmat, time_limit=None):
     centers = []
     for j in range(m):
         centers.append(choose_center_for_district(partition[j], j, instance, dmat))
+    # final check
+    for j in range(m):
+        if not is_connected_set(partition[j], adj):
+            print("Warning: initial district", j, "not connected")
+            exit(0)
     return partition, centers
 
 # helper: components of induced subgraph
@@ -344,14 +340,15 @@ def components_of_set(node_set, adj):
 
 # Destroy 1: Random leaf knock-out: remove up to k leaf nodes chosen randomly across districts
 
-def destroy_random_leafs(partition, adj, k):
+def destroy_random_leafs(centers,partition, adj, k):
     removed = []  # list of (node, from_district)
     m = len(partition)
     candidate_pairs = []
     for j in range(m):
         leaves = leaf_nodes_of_set(partition[j], adj)
         for u in leaves:
-            candidate_pairs.append((j, u))
+            if u != centers[j]:  # do not remove center
+                candidate_pairs.append((j, u))
     random.shuffle(candidate_pairs)
     for (j, u) in candidate_pairs[:k]:
         partition[j].remove(u)
@@ -360,7 +357,8 @@ def destroy_random_leafs(partition, adj, k):
 
 # Destroy 2: Path removal: pick a district, pick a short path of leaf-to-leaf nodes and remove them
 
-def destroy_path(partition, adj, k):
+def destroy_path(centers, partition, adj, k):
+    #return []
     m = len(partition)
     j = random.randrange(m)
     # attempt to find a path inside partition[j]
@@ -384,6 +382,8 @@ def destroy_path(partition, adj, k):
                 if v in leaves and v != start:
                     target = v
                     break
+        if target != None:
+            break
     if target is None:
         return []
     # reconstruct path
@@ -393,19 +393,38 @@ def destroy_path(partition, adj, k):
         path.append(cur)
         cur = parent[cur]
     path = list(reversed(path))
+    k = random.randint(1, min(k, len(path)))
     to_remove = path[:k]
     removed = []
-    for u in to_remove:
-        # only remove if still a leaf at removal time
+    front, back = 0, len(path) - 1
+    while front <= back and len(removed) < k:
         leaves_now = leaf_nodes_of_set(partition[j], adj)
-        if u in leaves_now:
+
+        # ưu tiên xóa front
+        if (path[front] in leaves_now) and (path[front] != centers[j]):
+            u = path[front]
             partition[j].remove(u)
             removed.append((u, j))
+            front += 1
+            continue
+
+        # nếu không xóa được front thì thử back
+        if (path[back] in leaves_now) and (path[back] != centers[j]):
+            u = path[back]
+            partition[j].remove(u)
+            removed.append((u, j))
+            back -= 1
+            continue
+
+        # nếu cả front lẫn back đều không xóa được thì dừng
+        break
+
     return removed
 
 # Destroy 3: Worst-affinity removal: remove nodes with highest affinity loss (f_ij large) but only if removable
 
-def destroy_worst_affinity(partition, instance, adj, k):
+def destroy_worst_affinity(centers,partition, instance, adj, k):
+    #return []
     m = len(partition)
     f = instance['f']
     candidate = []
@@ -417,6 +436,8 @@ def destroy_worst_affinity(partition, instance, adj, k):
     removed = []
     for item in candidate[:k]:
         _, j, u = item
+        if u == centers[j]:
+            continue
         partition[j].remove(u)
         removed.append((u, j))
     return removed
@@ -425,6 +446,7 @@ def destroy_worst_affinity(partition, instance, adj, k):
 # Choose groups dependent on their combined objective contribution (we pick the worst groups to disturb)
 
 def destroy_district_group(partition, centers, instance, adj, dmat, group_size_choices=(2,3)):
+    #return []
     m = len(partition)
     # build district adjacency graph
     district_adj = [set() for _ in range(m)]
@@ -490,37 +512,61 @@ def destroy_district_group(partition, centers, instance, adj, dmat, group_size_c
             removed.append((u, j))
     return removed
 
-# Bridge Node Removal Destroy Operator
-def destroy_bridge_nodes(partition, adj, k):
+# Thay thế hàm destroy_bridge_nodes bằng destroy_articulation_split
+def destroy_articulation_split(partition, centers, adj, max_ratio=0.2):
     """
-    Remove up to k bridge nodes (articulation points) from random districts.
-    Only removes if the district remains connected after removal.
+    Chọn các node khớp (articulation points) trong từng district mà khi xóa sẽ làm tăng số thành phần liên thông.
+    Xóa ngẫu nhiên không quá max_ratio số node khớp.
+    Sau đó chỉ giữ lại các node còn liên thông với center, các thành phần rời bị loại bỏ.
     """
-    from networkx import Graph, articulation_points
+    import networkx as nx
     import random
 
     removed = []
     m = len(partition)
-    candidate_pairs = []
     for j in range(m):
-        # Build subgraph for district
-        G = Graph()
+        G = nx.Graph()
         G.add_nodes_from(partition[j])
         for u in partition[j]:
             for v in adj[u]:
                 if v in partition[j]:
                     G.add_edge(u, v)
-        bridges = list(articulation_points(G))
+        # Tìm articulation points
+        bridges = list(nx.articulation_points(G))
+        # Chỉ chọn những node mà khi xóa sẽ làm tăng số thành phần liên thông
+        critical_nodes = []
+        comps_before = [c for c in nx.connected_components(G)]
+        n_comps_before = len(comps_before)
         for u in bridges:
-            candidate_pairs.append((j, u))
-    random.shuffle(candidate_pairs)
-    for (j, u) in candidate_pairs[:k]:
-        # Remove only if district remains connected
-        temp = partition[j].copy()
-        temp.remove(u)
-        if is_connected_set(temp, adj):
-            partition[j].remove(u)
-            removed.append((u, j))
+            G2 = G.copy()
+            G2.remove_node(u)
+            n_comps_after = nx.number_connected_components(G2)
+            if n_comps_after > n_comps_before:
+                critical_nodes.append(u)
+        # Xóa ngẫu nhiên không quá 20% số critical_nodes
+        if critical_nodes:
+            k = max(1, int(max_ratio * len(critical_nodes)))
+            to_remove = random.sample(critical_nodes, min(k, len(critical_nodes)))
+            for u in to_remove:
+                partition[j].remove(u)
+                removed.append((u, j))
+        # Sau khi xóa, chỉ giữ lại các node còn liên thông với center
+        if centers[j] in partition[j]:
+            G3 = nx.Graph()
+            G3.add_nodes_from(partition[j])
+            for u in partition[j]:
+                for v in adj[u]:
+                    if v in partition[j]:
+                        G3.add_edge(u, v)
+            # Tìm thành phần liên thông chứa center
+            for comp in nx.connected_components(G3):
+                if centers[j] in comp:
+                    keep_nodes = set(comp)
+                    break
+            remove_nodes = [u for u in partition[j] if u not in keep_nodes]
+            for u in remove_nodes:
+                partition[j].remove(u)
+                removed.append((u, j))
     return removed
 
 # ------------------------------ Repair operators ------------------------------
@@ -595,25 +641,74 @@ def repair_affinity_compact(unassigned, partition, centers, instance, dmat):
     nodes = instance['nodes']
     f = instance['f']
     assigned_nodes = []
+
+    # --- Sort lại unassigned bằng BFS đa nguồn từ các node biên ---
+    q = []
+    inqueue = set()
+    ordered = []
+
+    # khởi tạo queue với các node biên
     for u in list(unassigned):
-        # candidate districts must have neighbor
+        for v in adj[u]:
+            for j in range(m):
+                if v in partition[j]:
+                    if u not in inqueue:
+                        q.append(u)
+                        inqueue.add(u)
+                    break
+            if u in inqueue:
+                break
+
+    #print("Initial queue length: ", len(q))
+    #print("Unassigned length: ", len(unassigned))
+    # BFS đa nguồn
+    head = 0
+    while head < len(q):
+        u = q[head]
+        head += 1
+        if u in unassigned and u not in ordered:
+            ordered.append(u)
+            for v in adj[u]:
+                if v in unassigned and v not in inqueue:
+                    q.append(v)
+                    inqueue.add(v)
+
+    # nếu còn node isolated thì thêm cuối
+    for u in unassigned:
+        if u not in ordered:
+           # print("Not legit\n")
+            #exit(0)
+            ordered.append(u)
+
+    for u in ordered:
+        if u not in unassigned:
+            continue
         cands = set()
         for v in adj[u]:
             for j in range(m):
                 if v in partition[j]:
                     cands.add(j)
         if not cands:
+           # print("Isolated node encountered in affinity-compact repair")
             j = min(range(m), key=lambda x: len(partition[x]))
             partition[j].add(u)
             assigned_nodes.append((u,j))
             unassigned.remove(u)
             continue
-        # choose min f value then min distance to center
-        bestj = min(list(cands), key=lambda j: (f[j][u], dmat[u][centers[j]] if centers[j] is not None else 0.0))
+        bestj = min(
+            list(cands),
+            key=lambda j: (
+                f[j][u],
+                dmat[u][centers[j]] if centers[j] is not None else 0.0
+            )
+        )
         partition[bestj].add(u)
         assigned_nodes.append((u,bestj))
         unassigned.remove(u)
+
+    #print(len(unassigned))
     return assigned_nodes
+
 
 # Repair 3: Assign to nearest center district (connectivity requires neighbor) - if no neighbor, attach to nearest center's district
 
@@ -738,6 +833,7 @@ def repair_2regret(unassigned, partition, centers, instance, dmat):
 
 # ------------------------------ ALNS main loop ------------------------------
 
+
 def alns(instance, iters=50000, time_limit=3000, stable_iters = 500, seed=42):
     #print(iters, time_limit, stable_iters, seed)
     random.seed(seed)
@@ -753,9 +849,12 @@ def alns(instance, iters=50000, time_limit=3000, stable_iters = 500, seed=42):
     best_partition = [set(s) for s in cur_partition]
     best_centers = list(cur_centers)
     best_objs = cur_objs
+    partition = [set(s) for s in cur_partition]
+    centers = list(cur_centers)
 
+    #return best_partition, best_centers, best_objs
     # operator pools (added district-group destroy and 2-regret repair)
-    destroy_ops = [destroy_random_leafs, destroy_path, destroy_worst_affinity, destroy_district_group, destroy_bridge_nodes]
+    destroy_ops = [destroy_random_leafs, destroy_path, destroy_worst_affinity, destroy_district_group]
     repair_ops = [repair_greedy_feasible, repair_affinity_compact, repair_nearest_center, repair_2regret]
     # adaptive weights
     d_weights = [1.0]*len(destroy_ops)
@@ -771,15 +870,20 @@ def alns(instance, iters=50000, time_limit=3000, stable_iters = 500, seed=42):
 
     start_time = time.time()
     no_improve = 0
+
+    score = [0.1,1,5]  # scores for operator success levels
+
     for it in range(iters):
         if time_limit and time.time()-start_time > time_limit:
             break
         # select operators probabilistically
         d_idx = roulette_choice(d_weights)
         r_idx = roulette_choice(r_weights)
+
         # copy current partition
         partition = [set(s) for s in cur_partition]
         centers = list(cur_centers)
+
         # decide number of nodes to remove (k)
         k = max(1, int(0.02 * n))
         if it % 50 == 0:
@@ -787,15 +891,15 @@ def alns(instance, iters=50000, time_limit=3000, stable_iters = 500, seed=42):
         # perform destroy (must track removed nodes)
         removed = []
         if destroy_ops[d_idx] is destroy_random_leafs:
-            removed = destroy_random_leafs(partition, adj, k)
+            removed = destroy_random_leafs(centers,partition, adj, k)
         elif destroy_ops[d_idx] is destroy_path:
-            removed = destroy_path(partition, adj, k)
+            removed = destroy_path(centers,partition, adj, k)
         elif destroy_ops[d_idx] is destroy_worst_affinity:
-            removed = destroy_worst_affinity(partition, instance, adj, k)
+            removed = destroy_worst_affinity(centers,partition, instance, adj, k)
         elif destroy_ops[d_idx] is destroy_district_group:
             removed = destroy_district_group(partition, centers, instance, adj, dmat)
-        elif destroy_ops[d_idx] is destroy_bridge_nodes:
-            removed = destroy_bridge_nodes(partition, adj, k)
+        # elif destroy_ops[d_idx] is destroy_articulation_split:
+        #     removed = destroy_articulation_split(partition, centers, adj, max_ratio=0.2)
         unassigned = [u for (u,_) in removed]
 
         # ensure centers still valid; if a center was removed or no f==1 center exists, pick new center with f==1 if possible
@@ -844,7 +948,15 @@ def alns(instance, iters=50000, time_limit=3000, stable_iters = 500, seed=42):
             prob = math.exp((cur_score - new_score) / max(1e-9, T))
             if random.random() < prob:
                 accept = True
+
+        #print(destroy_ops[d_idx].__name__, "\t", repair_ops[r_idx].__name__,end = "\t")
+        for j in range(instance['m']):
+            if not is_connected_set(cur_partition[j], instance['adj']):
+                accept = False
+                break
+
         if accept:
+            #print(" Accepted", end = " ")
             cur_partition = [set(s) for s in partition]
             cur_centers = list(centers)
             cur_objs = new_objs
@@ -853,16 +965,26 @@ def alns(instance, iters=50000, time_limit=3000, stable_iters = 500, seed=42):
                 best_partition = [set(s) for s in partition]
                 best_centers = list(centers)
                 best_objs = new_objs
-                d_scores[d_idx] += 5.0
-                r_scores[r_idx] += 5.0
+                d_scores[d_idx] += score[2]
+                r_scores[r_idx] += score[2]
+                #print(" BEST")
                 no_improve = 0
             elif new_score < cur_score:
-                d_scores[d_idx] += 1.0
-                r_scores[r_idx] += 1.0
+                d_scores[d_idx] += score[1]
+                r_scores[r_idx] += score[1]
+                #print(" Better")
+            else :
+                # small reward for accepted but no improvement
+                d_scores[d_idx] += score[0]
+                r_scores[r_idx] += score[0]
+                #print(" Accepted")
         else:
             # small penalty for non-accepted
-            d_scores[d_idx] += 0.1
-            r_scores[r_idx] += 0.1
+            d_scores[d_idx] += score[0]
+            r_scores[r_idx] += score[0]
+            #print(" BAD")
+        
+
         d_counts[d_idx] += 1
         r_counts[r_idx] += 1
         # periodically update weights
@@ -878,6 +1000,7 @@ def alns(instance, iters=50000, time_limit=3000, stable_iters = 500, seed=42):
             cur_partition, cur_centers = initial_solution_seeded_growth(instance, dmat)
             cur_objs = compute_objectives(cur_partition, cur_centers, instance, dmat)
             no_improve = 0
+
     
     # for i in range(len(d_weights)):
     #     print(destroy_ops[i],d_weights[i], d_scores[i], d_counts[i])
@@ -924,13 +1047,14 @@ def main():
     #     print('Usage: python alns_territory_design.py input.txt output.txt')
     #     return
     s = input()
+    t = input()
    # s = "2DU60-05-1-edited"
-    input_path = "E:/Hanoi University of Science and Technology/BKAI/Territory design/ALNS/input_edited/" + s + ".dat";
-    output_path = "E:/Hanoi University of Science and Technology/BKAI/Territory design/ALNS/output_edited/" + s + ".out"
+    input_path  = "E:/Hanoi University of Science and Technology/BKAI/Territory design/ALNS/input/" + s + "/" + t + ".dat"
+    output_path = "E:/Hanoi University of Science and Technology/BKAI/Territory design/ALNS/output/" + s + "/" + t + ".out"
     inst = read_instance(input_path)
     start = time.time()
-    best_part, best_centers, best_objs = alns(inst, iters=100000, time_limit=300,
-                                              stable_iters = 500, seed=42)
+    best_part, best_centers, best_objs = alns(inst, iters=10000, time_limit=300,
+                                              stable_iters = 500, seed=None)
     dmat = compute_dist_matrix(inst['nodes'])
     write_output(output_path, best_part, best_centers, best_objs, inst, dmat)
     print('Done. Best objectives (balance_violation, affinity_loss, compactness):', best_objs)
